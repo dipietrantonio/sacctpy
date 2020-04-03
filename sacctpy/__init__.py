@@ -1,1 +1,1 @@
-from ._sacctpy import _sacct_exec, query_sacct
+from ._sacctpy import sacct, parse 

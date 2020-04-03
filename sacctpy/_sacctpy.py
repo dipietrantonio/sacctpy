@@ -135,7 +135,7 @@ def __format_datetime(d):
 
 
 
-def exec_sacct(**kwargs):
+def sacct(**kwargs):
     """
     Queries the Slurm job accounting log or Slurm database to retrieve information
     about jobs marching the specified search criteria.
@@ -143,6 +143,9 @@ def exec_sacct(**kwargs):
     Parameters
     ----------
     The function takes only keywords-only arguments. They are:
+
+    header : list of str, optional
+        Returns data associated to specified columns.
 
     user : sequence of str, optional
         Returns jobs submitted by a certain user (default: returns all users jobs).
@@ -188,8 +191,7 @@ def exec_sacct(**kwargs):
         args.extend(('-i', str(i) if isinstance(i, Integral) else f"{i[0]}-{i[1]}"))
     if 'jobs' in kwargs:
         args.append('--jobs={}'.format(','.join(kwargs['jobs'])))
-    
-    header = sorted(SACCT_OUTPUT_INFO.keys())
+    header = kwargs.get('header', sorted(SACCT_OUTPUT_INFO.keys()))
     args.append('--format={}'.format(','.join(header)))
     proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     proc_out = proc.stdout.decode('utf8')
@@ -211,13 +213,12 @@ def _line_iterator(input_str):
 
 
 
-def parse(sacct_out):
+def parse(sacct_out, sep='|'):
     if isinstance(sacct_out, str):
         sacct_out = _line_iterator(sacct_out)
-    header = next(sacct_out).split('|')
-    print(header)
-    for line in sacct_out:        
+    header = next(sacct_out).strip().split(sep)
     SlurmJob = namedtuple('SlurmJob', header)
-    jobs = [SlurmJob(*(SACCT_OUTPUT_INFO[header[i]](x) for i, x in enumerate(line.split(sep)))) for line in proc_out.splitlines() if len(line) > 0]
-    return jobs
+    for line in sacct_out:        
+        if len(line) > 0:
+            yield SlurmJob(*(SACCT_OUTPUT_INFO[header[i]](x) for i, x in enumerate(line.strip().split(sep))))
 

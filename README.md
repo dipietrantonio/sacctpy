@@ -8,5 +8,8 @@ The package developed in this repository provides a convenient wrapper around ``
 so to query programmatically the Slurm database from the Python interpreter.
 
 The interface is specifically tailored for the Slurm installation at Pawsey Supercomputing
-Centre. The output of ``sacctpy`` is parsed into suitable Python objects assuming a certain
-format for things like timestamps and timedeltas. 
+Centre.
+
+# Status
+
+The project is at an initial experimental phase, API might change drastically.

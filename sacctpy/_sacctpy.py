@@ -1,9 +1,8 @@
 """
-Implements the Python interface to sacct.
+Implements a Python interface to sacct.
 """
-
-
 import subprocess
+import os
 from numbers import Integral
 from collections import namedtuple
 from datetime import timedelta, datetime
@@ -12,6 +11,14 @@ from functools import partial
 
 month_to_num = {name: num for num, name in enumerate(calendar.month_abbr) if num}
 letter_to_exp = {x : e for e, x in enumerate(['K', 'M', 'G', 'T', 'P'], 1)}
+
+# set a SLURM environment variable to return dates in standard format
+os.environ['SLURM_TIME_FORMAT'] = 'standard'
+
+
+def beginning_of_day():
+    now = datetime.now()
+    return datetime(now.year, now.month, now.day)
 
 
 
@@ -36,12 +43,11 @@ number10 = partial(number, base=1000)
 
 
 def date(x):
-    return x
-    day, month, year = x.split()
-    day = int(day)
-    month = month_to_num[month]
-    year = int(year) if len(year) == 4 else int('20'+year)
-    # TODO: check the format
+    if x == 'Unknown':
+        return None
+    (year, month, day), (hour, minute, second) = (int(v) for v in x[:10].split('-')), (int(v) for v in x[11:].split(':')) 
+    return datetime(year, month, day, hour, minute, second)
+
 
 
 def to_elapsed(t, seconds_first = False):
@@ -94,11 +100,11 @@ SACCT_OUTPUT_INFO = {
     "AssocID"             : ident,                    "AveCPU"              : to_elapsed, "AveCPUFreq"         : number10,
     "AveDiskRead"         : number,                   "AveDiskWrite"        : number,     "AvePages"           :  number10,
     "AveRSS"              : number,                   "AveVMSize"           : number,     "BlockID"            : ident,
-    "Cluster"             : ident,                    "Comment"             : ident,      "Constraints"        : ident,
+    "Cluster"             : ident,                    "Comment"             : ident,      # "Constraints"        : ident,
     "ConsumedEnergy"      : ident,                    "ConsumedEnergyRaw"   : ident,      "CPUTime"            : to_elapsed,
     "CPUTimeRAW"          : number,                   "DerivedExitCode"     : ecode,      "Elapsed"            : to_elapsed,
     "ElapsedRaw"          : number,                   "Eligible"            : date,       "End"                : date,
-    "ExitCode"            : ecode,                    "Flags"               : ident,      "GID"                : ident,
+    "ExitCode"            : ecode,                    "GID"                : ident,       # "Flags"               : ident, 
     "Group"               : ident,                    "JobID"               : ident,      "JobIDRaw"           : ident,
     "JobName"             : ident,                    "Layout"              : ident,      "MaxDiskRead"        : number,
     "MaxDiskReadNode"     : ident,                    "MaxDiskReadTask"     : ident,      "MaxDiskWrite"       : number,
@@ -109,7 +115,7 @@ SACCT_OUTPUT_INFO = {
     "MinCPU"              : to_elapsed,               "MinCPUNode"          : ident,      "MinCPUTask"         : ident,
     "NCPUS"               : number10,                 "NNodes"              : number10,   "NodeList"           : ident,
     "NTasks"              : number10,                 "Priority"            : number10,   "Partition"          : ident,
-    "QOS"                 : ident,                    "QOSRAW"              : ident,      "Reason"             : ident,
+    "QOS"                 : ident,                    "QOSRAW"              : ident,      # "Reason"             : ident,
     "ReqCPUFreq"          : number10,                 "ReqCPUFreqMin"       : number10,   "ReqCPUFreqMax"      : number10,
     "ReqCPUFreqGov"       : ident,                    "ReqCPUS"             : number10,   "ReqGRES"            : partial(asdict, sep=':'),
     "ReqMem"              : number,                   "ReqNodes"            : number10,   "ReqTRES"            : asdict,
@@ -135,10 +141,47 @@ def __format_datetime(d):
 
 
 
+def __exec_sacct(kwargs : 'dict'):
+    """
+    Supports the execution of `sacct` building the command line arguments and executing
+    the `sacct` utility.
+    """
+    args = ['sacct', '-P']
+    sep = '|'
+    if 'user' in kwargs:
+        args.append('--user={}'.format(','.join(kwargs['user'])))
+    else:
+        args.append('-a')
+    if 'accounts' in kwargs:
+        args.extend(('-A', ','.join(kwargs['accounts'])))
+    if 'end_time' in kwargs:
+        args.extend(('-E', __format_datetime(kwargs['end_time'])))
+    if 'start_time' in kwargs:
+        args.extend(('-S', __format_datetime(kwargs['start_time'])))
+    if 'nnodes' in kwargs:
+        i = kwargs['nnodes']
+        args.extend(('-i', str(i) if isinstance(i, Integral) else f"{i[0]}-{i[1]}"))
+    if 'jobs' in kwargs:
+        args.append('--jobs={}'.format(','.join(kwargs['jobs'])))
+    header = kwargs.get('header', sorted(SACCT_OUTPUT_INFO.keys()))
+    args.append('--format={}'.format(','.join(header)))
+    proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=os.environ)
+    proc_out = proc.stdout.decode('utf8')
+    if proc_out.startswith('sacct: error'):
+        raise Exception(proc_out) 
+    return proc_out
+
+
+
 def sacct(**kwargs):
     """
     Queries the Slurm job accounting log or Slurm database to retrieve information
     about jobs marching the specified search criteria.
+
+    Description
+    -----------
+    In case the data requested span over a time period greater than a week, the query
+    will be splitted in sub queries such that sacct will be called for 
 
     Parameters
     ----------
@@ -146,6 +189,10 @@ def sacct(**kwargs):
 
     header : list of str, optional
         Returns data associated to specified columns.
+    
+    pause : float, optional
+        In case the query must be splitted in subqueries, the time to wait before
+        one query and the next.
 
     user : sequence of str, optional
         Returns jobs submitted by a certain user (default: returns all users jobs).
@@ -170,32 +217,31 @@ def sacct(**kwargs):
     
     Returns
     -------
-    A list of named tuples, each representing a job.
+    jobs : list
+        A list of named tuples, each representing a job.
     """
-    # run sacct without header info being displayed in the output.
-    # Also, the output must be parsable.
-    args = ['sacct', '-P']
-    sep = '|'
-    if 'user' in kwargs:
-        args.append('--user={}'.format(','.join(kwargs['user'])))
+    # First check. If the data required spans over one week time period,
+    # break the query in multiple sub queries, of one week length each.
+    start_time, end_time = kwargs.get('start_time', beginning_of_day()), kwargs.get('end_time', datetime.now())
+    time_period = end_time - start_time
+    if time_period.days > 7:
+        time_pause = kwargs.get('pause', 1)
+        final_output = str()
+        start = start_time
+        end = datetime.fromtimestamp(start.timestamp() +  60 * 60 * 24 * 7)
+        while start < end:
+            kwargs['start_time'] = start
+            kwargs['end_time'] = end
+            output = __exec_sacct(kwargs)
+            if len(final_output) > 0:
+                output = output[output.find('\n')+1:]
+            final_output += output
+            start = end
+            end = datetime.fromtimestamp(start.timestamp() +  60 * 60 * 24 * 7)
+            time.sleep(time_pause)
+        return final_output
     else:
-        args.append('-a')
-    if 'accounts' in kwargs:
-        args.extend(('-A', ','.join(kwargs['accounts'])))
-    if 'end_time' in kwargs:
-        args.extend(('-E', __format_datetime(kwargs['end_time'])))
-    if 'start_time' in kwargs:
-        args.extend(('-S', __format_datetime(kwargs['start_time'])))
-    if 'nnodes' in kwargs:
-        i = kwargs['nnodes']
-        args.extend(('-i', str(i) if isinstance(i, Integral) else f"{i[0]}-{i[1]}"))
-    if 'jobs' in kwargs:
-        args.append('--jobs={}'.format(','.join(kwargs['jobs'])))
-    header = kwargs.get('header', sorted(SACCT_OUTPUT_INFO.keys()))
-    args.append('--format={}'.format(','.join(header)))
-    proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    proc_out = proc.stdout.decode('utf8')
-    return proc_out
+        return __exec_sacct(kwargs)
 
 
 

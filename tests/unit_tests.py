@@ -4,7 +4,7 @@ from .context import *
 
 class SacctLauncherUnitTest(unittest.TestCase):
    
-    @unittest.skipUnless(ON_CLUSTER, "sacct is only available on clusters.") 
+    @unittest.skipUnless(CLUSTER in ['Topaz', 'Magnus', 'Zeus'], "sacct is only available on clusters.") 
     def test_sacct_launch(self):
         """
         Tests if sacct is invoked with success.

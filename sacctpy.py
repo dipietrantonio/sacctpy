@@ -5,20 +5,18 @@ import subprocess
 import os
 from numbers import Integral
 from collections import namedtuple
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, date
 import calendar
 from functools import partial
+import logging
+import time
+
 
 month_to_num = {name: num for num, name in enumerate(calendar.month_abbr) if num}
 letter_to_exp = {x : e for e, x in enumerate(['K', 'M', 'G', 'T', 'P'], 1)}
 
 # set a SLURM environment variable to return dates in standard format
 os.environ['SLURM_TIME_FORMAT'] = 'standard'
-
-
-def beginning_of_day():
-    now = datetime.now()
-    return datetime(now.year, now.month, now.day)
 
 
 
@@ -42,7 +40,7 @@ number10 = partial(number, base=1000)
 
 
 
-def date(x):
+def to_datetime(x):
     if x == 'Unknown':
         return None
     (year, month, day), (hour, minute, second) = (int(v) for v in x[:10].split('-')), (int(v) for v in x[11:].split(':')) 
@@ -103,7 +101,7 @@ SACCT_OUTPUT_INFO = {
     "Cluster"             : ident,                    "Comment"             : ident,      # "Constraints"        : ident,
     "ConsumedEnergy"      : ident,                    "ConsumedEnergyRaw"   : ident,      "CPUTime"            : to_elapsed,
     "CPUTimeRAW"          : number,                   "DerivedExitCode"     : ecode,      "Elapsed"            : to_elapsed,
-    "ElapsedRaw"          : number,                   "Eligible"            : date,       "End"                : date,
+    "ElapsedRaw"          : number,                   "Eligible"            : to_datetime,       "End"                : to_datetime,
     "ExitCode"            : ecode,                    "GID"                : ident,       # "Flags"               : ident, 
     "Group"               : ident,                    "JobID"               : ident,      "JobIDRaw"           : ident,
     "JobName"             : ident,                    "Layout"              : ident,      "MaxDiskRead"        : number,
@@ -120,8 +118,8 @@ SACCT_OUTPUT_INFO = {
     "ReqCPUFreqGov"       : ident,                    "ReqCPUS"             : number10,   "ReqGRES"            : partial(asdict, sep=':'),
     "ReqMem"              : number,                   "ReqNodes"            : number10,   "ReqTRES"            : asdict,
     "Reservation"         : ident,                    "ReservationId"       : ident,      "Reserved"           : to_elapsed,
-    "ResvCPU"             : to_elapsed,               "ResvCPURAW"          : number10,   "Start"              : date,
-    "State"               : ident,                    "Submit"              : date,       "Suspended"          : to_elapsed,
+    "ResvCPU"             : to_elapsed,               "ResvCPURAW"          : number10,   "Start"              : to_datetime,
+    "State"               : ident,                    "Submit"              : to_datetime,       "Suspended"          : to_elapsed,
     "SystemCPU"           : to_elapsed,               "SystemComment"       : ident,      "Timelimit"          : to_elapsed,
     "TimelimitRaw"        : number10,                 "TotalCPU"            : to_elapsed, "TRESUsageInAve"     : asdict,
     "TRESUsageInMax"      : asdict,                   "TRESUsageInMaxNode"  : asdict,     "TRESUsageInMaxTask" : asdict,
@@ -222,22 +220,26 @@ def sacct(**kwargs):
     """
     # First check. If the data required spans over one week time period,
     # break the query in multiple sub queries, of one week length each.
-    start_time, end_time = kwargs.get('start_time', beginning_of_day()), kwargs.get('end_time', datetime.now())
+    today = date.today()
+    beginning_of_day = datetime(today.year, today.month, today.day)
+    start_time, end_time = kwargs.get('start_time', beginning_of_day), kwargs.get('end_time', datetime.now())
     time_period = end_time - start_time
-    if time_period.days > 7:
+    week_period = timedelta(days=7)
+    if time_period > week_period:
         time_pause = kwargs.get('pause', 1)
         final_output = str()
-        start = start_time
-        end = datetime.fromtimestamp(start.timestamp() +  60 * 60 * 24 * 7)
-        while start < end:
-            kwargs['start_time'] = start
-            kwargs['end_time'] = end
+        week_period_start = start_time
+        while week_period_start < end_time:
+            week_period_end = week_period_start + week_period
+            week_period_end = week_period_end if week_period_end < end_time else end_time 
+            logging.info(f"Querying time period {week_period_start} - {week_period_end}") 
+            kwargs['start_time'] = week_period_start
+            kwargs['end_time'] = week_period_end
             output = __exec_sacct(kwargs)
             if len(final_output) > 0:
                 output = output[output.find('\n')+1:]
             final_output += output
-            start = end
-            end = datetime.fromtimestamp(start.timestamp() +  60 * 60 * 24 * 7)
+            week_period_start = week_period_end
             time.sleep(time_pause)
         return final_output
     else:
